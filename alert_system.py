@@ -16,11 +16,9 @@ class AlertSystem:
             
         try:
             self.bot = Bot(bot_token)
-            # Test the bot token by getting bot info
-            bot_info = self.bot.get_me()
-            print("✅ Alert System initialized with bot: @{}".format(bot_info.username))
-            print("   Bot ID: {}".format(bot_info.id))
-            print("   Bot Name: {}".format(bot_info.first_name))
+            print("✅ Alert System initialized with bot token")
+            # Don't test the bot here - it causes async issues
+            # We'll test it when we actually need to send messages
         except Exception as e:
             print("❌ AlertSystem: Failed to initialize bot: {}".format(e))
             self.bot = None
@@ -53,7 +51,7 @@ class AlertSystem:
             
             # Prepare alert message
             alert_message = self._format_alert_message(
-                "Protected Community",  # You can enhance this to get actual community name
+                "Protected Community",
                 user_info,
                 reasons,
                 message_content
