@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
@@ -7,10 +8,15 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database import Session, Community, AlertSettings
+# Import our modules
+from database import db
 from monitoring import ActivityMonitor
 from alert_system import AlertSystem
 import config
+
+print("="*60)
+print("🤖 STARTING TELEGRAM PROTECTION BOT")
+print("="*60)
 
 # Set up logging
 logging.basicConfig(
@@ -21,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 class ProtectionBot:
     def __init__(self):
+        print("\n🔨 Creating ProtectionBot instance...")
         self.config = config.Config()
         self.monitor = ActivityMonitor()
         self.alert_system = AlertSystem(self.config.BOT_TOKEN)
+        print("✅ ProtectionBot instance created")
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message when the bot is started"""
+        print("🎯 /start command received from user: {}".format(update.effective_user.id))
+        
         welcome_text = """
 🤖 <b>Community Protection Bot</b>
 
@@ -43,10 +53,15 @@ Add me to your group/channel and make me an administrator with full permissions 
 
 Developed with ❤️ for Telegram community safety.
         """
-        await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+        try:
+            await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+            print("✅ Welcome message sent successfully")
+        except Exception as e:
+            print("❌ Failed to send welcome message: {}".format(e))
     
     async def handle_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle when bot is added to a new group/channel"""
+        print("👥 New chat members event detected")
         new_members = update.message.new_chat_members
         bot_id = context.bot.id
         
@@ -54,30 +69,17 @@ Developed with ❤️ for Telegram community safety.
             if member.id == bot_id:
                 # Bot was added to a group
                 chat = update.effective_chat
-                await self._register_community(chat, update.effective_user.id)
+                print("🎉 Bot added to new community:")
+                print("   Chat ID: {}".format(chat.id))
+                print("   Chat Title: {}".format(chat.title))
+                print("   Chat Type: {}".format(chat.type))
+                print("   Added by: {}".format(update.effective_user.id))
+                
+                db.add_community(chat.id, chat.title, chat.type, update.effective_user.id)
                 
                 # Request admin permissions
                 if chat.type in ['group', 'supergroup']:
                     await self.alert_system.request_admin_permissions(chat.id, bot_id)
-    
-    async def _register_community(self, chat, owner_id):
-        """Register a new community in database"""
-        session = Session()
-        try:
-            community = Community(
-                chat_id=str(chat.id),
-                chat_title=chat.title,
-                chat_type=chat.type,
-                owner_id=str(owner_id)
-            )
-            session.add(community)
-            session.commit()
-            logger.info(f"Registered new community: {chat.title}")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error registering community: {e}")
-        finally:
-            session.close()
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Monitor all messages for suspicious activities"""
@@ -104,7 +106,7 @@ Developed with ❤️ for Telegram community safety.
             }
             
             # Log the activity
-            self.monitor.log_activity(
+            db.log_suspicious_activity(
                 chat_id=message.chat_id,
                 user_id=user.id,
                 username=user.username,
@@ -123,76 +125,74 @@ Developed with ❤️ for Telegram community safety.
     
     async def check_admin_status(self, context: CallbackContext):
         """Periodically check if bot has admin permissions"""
-        session = Session()
-        try:
-            communities = session.query(Community).all()
-            
-            for community in communities:
-                try:
-                    chat = await context.bot.get_chat(community.chat_id)
-                    bot_member = await chat.get_member(context.bot.id)
-                    
-                    # Check if bot is admin with necessary permissions
-                    if bot_member.status in ['administrator', 'creator']:
-                        if bot_member.can_delete_messages and bot_member.can_restrict_members:
-                            community.has_full_permissions = True
-                        else:
-                            community.has_full_permissions = False
-                    else:
-                        community.has_full_permissions = False
-                    
-                    community.is_bot_admin = bot_member.status in ['administrator', 'creator']
-                    session.commit()
-                    
-                except Exception as e:
-                    logger.error(f"Error checking admin status for {community.chat_id}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Error in admin status check: {e}")
-        finally:
-            session.close()
+        # This is a simplified version - you can expand this later
+        pass
     
     async def setup_commands(self, application: Application):
         """Setup bot commands"""
+        print("⚙️ Setting up bot commands...")
         commands = [
             BotCommand("start", "Start the bot"),
             BotCommand("help", "Get help information"),
             BotCommand("status", "Check bot status in this chat"),
         ]
         await application.bot.set_my_commands(commands)
+        print("✅ Bot commands setup complete")
     
     def run(self):
         """Start the bot"""
-        application = Application.builder().token(self.config.BOT_TOKEN).build()
+        print("\n🚀 Starting bot initialization...")
         
-        # Add handlers
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("help", self.start))
-        application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_chat_members))
-        application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
+        # Check if BOT_TOKEN is set
+        if not self.config.BOT_TOKEN:
+            print("❌ CRITICAL: BOT_TOKEN environment variable is not set!")
+            print("💡 Get it from @BotFather on Telegram")
+            return
         
-        # Add job queue for periodic tasks
-        job_queue = application.job_queue
-        if job_queue:
-            job_queue.run_repeating(self.check_admin_status, interval=300, first=10)  # Every 5 minutes
+        if not self.config.OWNER_ID:
+            print("❌ CRITICAL: OWNER_ID environment variable is not set!")
+            print("💡 Get your user ID from @userinfobot on Telegram")
+            return
         
-        # Setup commands
-        application.post_init = self.setup_commands
-        
-        # Start the bot
-        if os.getenv('RENDER'):
-            # On Render, use webhook (optional for background worker)
-            port = int(os.getenv('PORT', 8443))
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=self.config.BOT_TOKEN,
-                webhook_url=f"https://your-app-name.onrender.com/{self.config.BOT_TOKEN}"
-            )
-        else:
-            # Local development - use polling
-            application.run_polling()
+        try:
+            print("🔧 Building application...")
+            application = Application.builder().token(self.config.BOT_TOKEN).build()
+            print("✅ Application built successfully")
+            
+            # Add handlers
+            print("🔧 Adding command handlers...")
+            application.add_handler(CommandHandler("start", self.start))
+            application.add_handler(CommandHandler("help", self.start))
+            application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_chat_members))
+            application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
+            print("✅ Handlers added successfully")
+            
+            # Setup commands
+            application.post_init = self.setup_commands
+            
+            print("\n" + "="*50)
+            print("✅ BOT INITIALIZATION COMPLETE")
+            print("🤖 Bot is starting...")
+            print("📱 Send /start to your bot to test it")
+            print("="*50 + "\n")
+            
+            # Start the bot
+            if self.config.IS_RENDER:
+                print("🌐 Using polling on Render...")
+                application.run_polling()
+            else:
+                print("💻 Using polling locally...")
+                application.run_polling()
+                
+        except Exception as e:
+            print("❌ CRITICAL: Failed to start bot: {}".format(e))
+            print("💡 Check your BOT_TOKEN and internet connection")
 
 if __name__ == '__main__':
-    bot = ProtectionBot()
-    bot.run()
+    try:
+        bot = ProtectionBot()
+        bot.run()
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print("❌ Unexpected error: {}".format(e))
