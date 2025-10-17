@@ -30,6 +30,7 @@ class ProtectionBot:
         print("\n🔨 Creating ProtectionBot instance...")
         self.config = config.Config()
         self.monitor = ActivityMonitor()
+        # Initialize alert system without async calls
         self.alert_system = AlertSystem(self.config.BOT_TOKEN)
         print("✅ ProtectionBot instance created")
         
@@ -125,11 +126,6 @@ Developed with ❤️ for Telegram community safety.
                 message_content=message.text or message.caption
             )
     
-    async def check_admin_status(self, context: CallbackContext):
-        """Periodically check if bot has admin permissions"""
-        # This is a simplified version - you can expand this later
-        pass
-    
     async def setup_commands(self, application: Application):
         """Setup bot commands"""
         print("⚙️ Setting up bot commands...")
@@ -179,19 +175,9 @@ Developed with ❤️ for Telegram community safety.
             print("📱 Send /start to your bot to test it")
             print("="*50 + "\n")
             
-            # Start the bot
-            if self.config.IS_RENDER:
-                print("🌐 Using polling on Render...")
-                application.run_polling(
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES
-                )
-            else:
-                print("💻 Using polling locally...")
-                application.run_polling(
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES
-                )
+            # Start the bot with simple polling
+            print("🌐 Starting polling...")
+            application.run_polling()
                 
         except Exception as e:
             print("❌ CRITICAL: Failed to start bot: {}".format(e))
