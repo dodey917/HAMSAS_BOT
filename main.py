@@ -93,6 +93,8 @@ Developed with ❤️ for Telegram community safety.
         if user.is_bot:
             return
         
+        print("💬 Message received from {} in chat {}".format(user.id, message.chat_id))
+        
         # Check for suspicious activities
         suspicious_reasons = self.monitor.check_message(message)
         
@@ -163,6 +165,7 @@ Developed with ❤️ for Telegram community safety.
             print("🔧 Adding command handlers...")
             application.add_handler(CommandHandler("start", self.start))
             application.add_handler(CommandHandler("help", self.start))
+            application.add_handler(CommandHandler("status", self.start))
             application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_chat_members))
             application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
             print("✅ Handlers added successfully")
@@ -179,14 +182,21 @@ Developed with ❤️ for Telegram community safety.
             # Start the bot
             if self.config.IS_RENDER:
                 print("🌐 Using polling on Render...")
-                application.run_polling()
+                application.run_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
             else:
                 print("💻 Using polling locally...")
-                application.run_polling()
+                application.run_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
                 
         except Exception as e:
             print("❌ CRITICAL: Failed to start bot: {}".format(e))
-            print("💡 Check your BOT_TOKEN and internet connection")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == '__main__':
     try:
@@ -196,3 +206,5 @@ if __name__ == '__main__':
         print("\n👋 Bot stopped by user")
     except Exception as e:
         print("❌ Unexpected error: {}".format(e))
+        import traceback
+        traceback.print_exc()
