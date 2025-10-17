@@ -23,6 +23,7 @@ try:
     from database import db
     from monitoring import ActivityMonitor
     from alert_system import AlertSystem
+    from reporting import ReportingSystem  # NEW: Import reporting system
     import config
     print("✅ All modules imported successfully")
 except ImportError as e:
@@ -35,8 +36,11 @@ class ProtectionBot:
         self.config = config.Config()
         self.monitor = ActivityMonitor()
         self.alert_system = AlertSystem(self.config.BOT_TOKEN)
+        self.reporting = None  # Will be initialized later when bot is available
         print("✅ ProtectionBot instance created")
-        
+    
+    # ===== EXISTING COMMANDS (PRESERVED) =====
+    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message when the bot is started"""
         print("🎯 /start command received from user: {}".format(update.effective_user.id))
@@ -55,6 +59,15 @@ I help protect your Telegram communities from suspicious activities that could l
 <b>Setup:</b>
 Add me to your group/channel and make me an administrator with full permissions for complete protection.
 
+<b>Available Commands:</b>
+/start - Start the bot
+/help - Show help information  
+/stats - Get group statistics
+/settings - Configure bot settings
+/alerts - Manage alert preferences
+/report - Report suspicious activity
+/groupreport - Current group status
+
 Developed with ❤️ for Telegram community safety.
         """
         try:
@@ -62,6 +75,165 @@ Developed with ❤️ for Telegram community safety.
             print("✅ Welcome message sent successfully")
         except Exception as e:
             print("❌ Failed to send welcome message: {}".format(e))
+    
+    # ===== NEW COMMANDS =====
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send help information"""
+        help_text = """
+🆘 <b>HAMSAS Bot Help Guide</b>
+
+🤖 <b>About Me:</b>
+I'm an advanced security bot designed to protect your Telegram groups from various threats including spam, raids, and suspicious activities.
+
+📋 <b>Available Commands:</b>
+
+🔹 /start - Start the bot and see welcome message
+🔹 /help - Show this help information  
+🔹 /stats - Get group statistics and security overview
+🔹 /settings - Configure bot settings and preferences
+🔹 /alerts - Manage alert types and notification preferences
+🔹 /report - Report suspicious activity to admins
+🔹 /groupreport - Get current group status report
+
+🛡️ <b>Security Features:</b>
+• Suspicious keyword detection
+• Mass joining monitoring
+• User behavior analysis
+• Spam pattern recognition
+• Real-time alert system
+
+⚙️ <b>Setup:</b>
+Make me an admin with:
+• Delete messages permission
+• Ban users permission  
+• Read messages permission
+
+Need help? Contact my developer!
+        """
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send group statistics"""
+        chat_id = update.effective_chat.id
+        
+        try:
+            # Get basic chat information
+            chat = await context.bot.get_chat(chat_id)
+            
+            stats_text = f"""
+📊 <b>Group Statistics - {chat.title}</b>
+
+👥 <b>Members:</b> Loading...
+🚨 <b>Activities Today:</b> 0
+⚠️ <b>Alerts Today:</b> 0
+🔍 <b>Suspicious Activities:</b> 0
+
+📈 <b>Security Status:</b> 🔒 Protected
+🕒 <b>Last Scan:</b> Just now
+
+<i>More detailed analytics coming soon!</i>
+            """
+            await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
+            
+        except Exception as e:
+            await update.message.reply_text("❌ Could not fetch statistics. Make sure I'm an admin in this group.")
+    
+    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Configure bot settings"""
+        settings_text = """
+⚙️ <b>Bot Settings</b>
+
+🔧 <b>Available Settings:</b>
+
+• <b>Alert Types:</b> Configure what triggers alerts
+• <b>Sensitivity:</b> Adjust detection sensitivity  
+• <b>Notification:</b> Set alert delivery methods
+• <b>Language:</b> Choose preferred language
+
+🛠️ <b>Quick Setup:</b>
+Use /alerts to manage alert preferences
+
+🔐 <b>Admin-only Features:</b>
+• Auto-moderation rules
+• Custom keyword lists
+• User restriction settings
+
+<i>Settings interface coming in next update!</i>
+        """
+        await update.message.reply_text(settings_text, parse_mode=ParseMode.HTML)
+    
+    async def alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manage alert preferences"""
+        alerts_text = """
+🚨 <b>Alert Management</b>
+
+📢 <b>Alert Types Available:</b>
+
+✅ <b>Suspicious Logins</b> - Unusual user activity
+✅ <b>Mass Joining</b> - Multiple users joining rapidly  
+✅ <b>Spam Detection</b> - Suspected spam messages
+✅ <b>Admin Actions</b> - Important moderation events
+✅ <b>Threat Detection</b> - Security threats
+
+🔔 <b>Notification Options:</b>
+• In-group alerts
+• Admin mentions
+• Silent mode
+• Summary reports
+
+⚡ <b>Quick Actions:</b>
+• Enable/disable specific alerts
+• Set alert sensitivity levels
+• Configure mute durations
+
+<i>Alert management interface coming soon!</i>
+        """
+        await update.message.reply_text(alerts_text, parse_mode=ParseMode.HTML)
+    
+    async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate comprehensive report of all groups/channels"""
+        try:
+            user_id = update.effective_user.id
+            if str(user_id) != self.config.OWNER_ID:
+                await update.message.reply_text("❌ This command is only available for the bot owner.")
+                return
+
+            # Show processing message
+            processing_msg = await update.message.reply_text("📊 Generating comprehensive report...")
+            
+            # Initialize reporting system if not already done
+            if self.reporting is None:
+                self.reporting = ReportingSystem(db, context.bot)
+            
+            # Generate reports
+            quick_report, detailed_report = await self.reporting.generate_owner_report()
+            
+            # Send in parts (Telegram has message length limits)
+            await processing_msg.delete()
+            await update.message.reply_text(quick_report, parse_mode=ParseMode.HTML)
+            
+            if detailed_report:
+                await update.message.reply_text(detailed_report, parse_mode=ParseMode.HTML)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error generating report: {str(e)}")
+    
+    async def group_report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate report for current group"""
+        try:
+            chat_id = update.effective_chat.id
+            
+            # Initialize reporting system if not already done
+            if self.reporting is None:
+                self.reporting = ReportingSystem(db, context.bot)
+                
+            report = await self.reporting.generate_group_report(chat_id)
+            await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error generating group report: {str(e)}")
+    
+    # ===== EXISTING HANDLERS (PRESERVED) =====
     
     async def handle_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle when bot is added to a new group/channel"""
@@ -135,6 +307,11 @@ Developed with ❤️ for Telegram community safety.
         commands = [
             BotCommand("start", "Start the bot"),
             BotCommand("help", "Get help information"),
+            BotCommand("stats", "Get group statistics"),
+            BotCommand("settings", "Configure bot settings"),
+            BotCommand("alerts", "Manage alert preferences"),
+            BotCommand("report", "Generate comprehensive report"),
+            BotCommand("groupreport", "Get current group status"),
             BotCommand("status", "Check bot status in this chat"),
         ]
         await application.bot.set_my_commands(commands)
@@ -163,7 +340,12 @@ Developed with ❤️ for Telegram community safety.
             # Add handlers
             print("🔧 Adding command handlers...")
             application.add_handler(CommandHandler("start", self.start))
-            application.add_handler(CommandHandler("help", self.start))
+            application.add_handler(CommandHandler("help", self.help_command))
+            application.add_handler(CommandHandler("stats", self.stats_command))
+            application.add_handler(CommandHandler("settings", self.settings_command))
+            application.add_handler(CommandHandler("alerts", self.alerts_command))
+            application.add_handler(CommandHandler("report", self.report_command))
+            application.add_handler(CommandHandler("groupreport", self.group_report_command))
             application.add_handler(CommandHandler("status", self.start))
             application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_chat_members))
             application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
