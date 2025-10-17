@@ -7,12 +7,6 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-# Import our modules
-from database import db
-from monitoring import ActivityMonitor
-from alert_system import AlertSystem
-import config
-
 print("="*60)
 print("🤖 STARTING TELEGRAM PROTECTION BOT")
 print("="*60)
@@ -23,6 +17,17 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Import our modules after logging is set up
+try:
+    from database import db
+    from monitoring import ActivityMonitor
+    from alert_system import AlertSystem
+    import config
+    print("✅ All modules imported successfully")
+except ImportError as e:
+    print(f"❌ Failed to import modules: {e}")
+    exit(1)
 
 class ProtectionBot:
     def __init__(self):
@@ -175,7 +180,7 @@ Developed with ❤️ for Telegram community safety.
             
             # Start the bot
             print("🌐 Starting polling...")
-            application.run_polling()
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
                 
         except Exception as e:
             print("❌ CRITICAL: Failed to start bot: {}".format(e))
