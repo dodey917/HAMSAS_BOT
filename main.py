@@ -1,10 +1,9 @@
 import os
 import logging
-import asyncio
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, CallbackContext
+    ContextTypes
 )
 from telegram.constants import ParseMode
 
@@ -30,7 +29,6 @@ class ProtectionBot:
         print("\n🔨 Creating ProtectionBot instance...")
         self.config = config.Config()
         self.monitor = ActivityMonitor()
-        # Initialize alert system without async calls
         self.alert_system = AlertSystem(self.config.BOT_TOKEN)
         print("✅ ProtectionBot instance created")
         
@@ -126,7 +124,7 @@ Developed with ❤️ for Telegram community safety.
                 message_content=message.text or message.caption
             )
     
-    async def setup_commands(self, application: Application):
+    async def setup_commands(self, application):
         """Setup bot commands"""
         print("⚙️ Setting up bot commands...")
         commands = [
@@ -175,7 +173,7 @@ Developed with ❤️ for Telegram community safety.
             print("📱 Send /start to your bot to test it")
             print("="*50 + "\n")
             
-            # Start the bot with simple polling
+            # Start the bot
             print("🌐 Starting polling...")
             application.run_polling()
                 
