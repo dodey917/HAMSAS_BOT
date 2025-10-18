@@ -1,737 +1,333 @@
 import os
 import logging
-import asyncio
-from datetime import datetime
 from telegram import Update, BotCommand
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, CallbackContext
-)
-from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+import sqlite3
+from datetime import datetime, timedelta
+import asyncio
 
-print("="*60)
-print("🤖 STARTING TELEGRAM PROTECTION BOT")
-print("="*60)
-
-# Set up logging
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-class Config:
-    """Configuration class to handle environment variables"""
-    def __init__(self):
-        self.BOT_TOKEN = os.getenv('BOT_TOKEN')
-        self.OWNER_ID = os.getenv('OWNER_ID')
-        self.OWNER_USERNAME = os.getenv('OWNER_USERNAME', '@Kayblezzy')
-        self.DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///bot_data.db')
-        
-        print("🔧 Configuration loaded:")
-        print(f"   BOT_TOKEN: {'✅ Set' if self.BOT_TOKEN else '❌ Missing'}")
-        print(f"   OWNER_ID: {'✅ ' + self.OWNER_ID if self.OWNER_ID else '❌ Missing'}")
-        print(f"   DATABASE_URL: {self.DATABASE_URL}")
+# Bot token from environment variable
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-class SimpleDatabase:
-    """Simple database implementation for basic functionality"""
-    def __init__(self):
-        self.communities = []
-        self.alerts = []
-        self.suspicious_activities = []
+# Database setup
+def init_db():
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
     
-    def initialize_database(self):
-        """Initialize database tables"""
-        print("🗄️  Initializing database...")
-        # This would normally create tables in a real database
-        print("✅ Database initialized")
+    # Create tables for group statistics and activity tracking
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_stats (
+            group_id INTEGER PRIMARY KEY,
+            group_title TEXT,
+            member_count INTEGER,
+            active_members INTEGER,
+            last_updated TIMESTAMP
+        )
+    ''')
     
-    def add_community(self, chat_id, title, chat_type, added_by):
-        """Add community to database"""
-        community = {
-            'chat_id': chat_id,
-            'title': title,
-            'type': chat_type,
-            'added_by': added_by,
-            'added_at': datetime.now(),
-            'is_active': True
-        }
-        # Remove if exists and add new
-        self.communities = [c for c in self.communities if c['chat_id'] != chat_id]
-        self.communities.append(community)
-        print(f"✅ Community added: {title} (ID: {chat_id})")
-        return True
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER,
+            message_count INTEGER,
+            active_users INTEGER,
+            date DATE
+        )
+    ''')
     
-    def get_all_communities(self):
-        """Get all communities"""
-        return self.communities
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_activity (
+            user_id INTEGER,
+            group_id INTEGER,
+            last_active TIMESTAMP,
+            message_count INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, group_id)
+        )
+    ''')
     
-    def log_suspicious_activity(self, chat_id, user_id, username, activity_type, description, message_content):
-        """Log suspicious activity"""
-        activity = {
-            'chat_id': chat_id,
-            'user_id': user_id,
-            'username': username,
-            'activity_type': activity_type,
-            'description': description,
-            'message_content': message_content,
-            'timestamp': datetime.now()
-        }
-        self.suspicious_activities.append(activity)
-        print(f"✅ Suspicious activity logged: {activity_type} in chat {chat_id}")
-        return True
-    
-    def get_total_alerts(self):
-        """Get total number of alerts"""
-        return len(self.suspicious_activities)
-    
-    def get_alerts_summary(self):
-        """Get alerts summary by community"""
-        summary = {}
-        for activity in self.suspicious_activities:
-            chat_id = activity['chat_id']
-            if chat_id not in summary:
-                # Find community title
-                community = next((c for c in self.communities if c['chat_id'] == chat_id), {'title': f'Chat {chat_id}'})
-                summary[chat_id] = {
-                    'chat_title': community['title'],
-                    'alert_count': 0
-                }
-            summary[chat_id]['alert_count'] += 1
-        
-        return list(summary.values())
+    conn.commit()
+    conn.close()
 
-class ActivityMonitor:
-    """Monitor for suspicious activities"""
-    def __init__(self):
-        self.suspicious_keywords = [
-            'spam', 'scam', 'fake', 'phishing', 'malware',
-            'virus', 'hack', 'password', 'login', 'credit card',
-            'bitcoin', 'crypto', 'investment', 'money', 'free'
-        ]
-        print(f"✅ Activity Monitor initialized with {len(self.suspicious_keywords)} keywords")
-    
-    def check_message(self, message):
-        """Check message for suspicious content"""
-        if not message.text:
-            return []
-        
-        text = message.text.lower()
-        suspicious_reasons = []
-        
-        # Check for suspicious keywords
-        for keyword in self.suspicious_keywords:
-            if keyword in text:
-                suspicious_reasons.append(f"Suspicious keyword: {keyword}")
-        
-        # Check for excessive capital letters (shouting)
-        if len(text) > 10 and sum(1 for c in text if c.isupper()) / len(text) > 0.7:
-            suspicious_reasons.append("Excessive capital letters")
-        
-        # Check for excessive emojis
-        emoji_count = sum(1 for c in text if c in ['😂', '😍', '🔥', '💯', '🎉', '💰'])
-        if emoji_count > 5:
-            suspicious_reasons.append("Excessive emojis")
-        
-        return suspicious_reasons
+# Initialize database
+init_db()
 
-class AlertSystem:
-    """System for sending alerts"""
-    def __init__(self, bot_token):
-        self.bot_token = bot_token
-        print("✅ Alert System initialized")
-    
-    async def send_alert(self, chat_id, user_info, reasons, message_content):
-        """Send alert to chat"""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "🤖 HAMSAS Bot is running!\n\n"
+            "Available commands:\n"
+            "/start - Live scanning in groups, introduction in private\n"
+            "/status - Community health checks\n"
+            "/stats - Community statistics\n\n"
+            "I can monitor group activity and provide member statistics even without admin rights!"
+        )
+    else:
+        # In groups, start live scanning mode
+        await update.message.reply_text(
+            "🔍 HAMSAS Bot is now live scanning this group!\n"
+            "I'll monitor activity and can provide statistics using /stats command."
+        )
+        # Start background scanning for this group
+        asyncio.create_task(live_scan_group(update.effective_chat.id, context.bot))
+
+async def live_scan_group(group_id: int, bot):
+    """Background task to scan group activity"""
+    while True:
         try:
-            alert_message = f"""
-🚨 <b>Suspicious Activity Detected</b>
-
-👤 <b>User:</b> {user_info.get('first_name', 'Unknown')}
-🆔 <b>ID:</b> <code>{user_info.get('user_id', 'Unknown')}</code>
-
-📝 <b>Reasons:</b>
-{chr(10).join(f'• {reason}' for reason in reasons)}
-
-💬 <b>Message:</b>
-{message_content[:200] + '...' if len(message_content) > 200 else message_content}
-
-🕒 <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}
-            """
-            # In a real implementation, this would send the message
-            print(f"📢 Alert would be sent to chat {chat_id}: {reasons}")
-            return True
+            # Update group statistics
+            await update_group_stats(group_id, bot)
+            # Wait 5 minutes between scans
+            await asyncio.sleep(300)
         except Exception as e:
-            print(f"❌ Failed to send alert: {e}")
-            return False
-    
-    async def request_admin_permissions(self, chat_id, bot_id):
-        """Request admin permissions"""
-        try:
-            print(f"🔐 Requesting admin permissions for chat {chat_id}")
-            # In a real implementation, this would send an admin request message
-            return True
-        except Exception as e:
-            print(f"❌ Failed to request admin permissions: {e}")
-            return False
+            logger.error(f"Error in live scan for group {group_id}: {e}")
+            break
 
-class ReportingSystem:
-    """System for generating reports"""
-    def __init__(self, database, bot):
-        self.db = database
-        self.bot = bot
-        print("✅ Reporting System initialized")
-    
-    async def generate_owner_report(self):
-        """Generate report for owner"""
-        communities = self.db.get_all_communities()
-        total_alerts = self.db.get_total_alerts()
+async def update_group_stats(group_id: int, bot):
+    """Update group member count and activity statistics"""
+    try:
+        # Get basic chat information
+        chat = await bot.get_chat(group_id)
+        member_count = await bot.get_chat_member_count(group_id)
         
-        quick_report = f"""
-📊 <b>Quick Status Overview</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🏠 <b>Active Communities:</b> {len(communities)}
-🚨 <b>Total Alerts:</b> {total_alerts}
-📈 <b>Monitoring Status:</b> ✅ Active
-
-🛡️ <b>Protection Systems:</b>
-• Live Scanning: ✅ Operational
-• Alert System: ✅ Active
-• Database: ✅ Connected
-
-🕒 <b>Last Update:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """
+        # Calculate active members (users who sent messages in last 24 hours)
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
         
-        detailed_report = f"""
-📋 <b>Detailed Community Analysis</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔍 <b>Community Breakdown:</b>
-"""
-        for community in communities[:10]:  # Show first 10
-            alerts_count = len([a for a in self.db.suspicious_activities if a['chat_id'] == community['chat_id']])
-            detailed_report += f"• {community['title']} - {alerts_count} alerts\n"
+        twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
+        cursor.execute(
+            'SELECT COUNT(DISTINCT user_id) FROM user_activity WHERE group_id = ? AND last_active > ?',
+            (group_id, twenty_four_hours_ago)
+        )
+        active_members = cursor.fetchone()[0] or 0
         
-        if len(communities) > 10:
-            detailed_report += f"• ... and {len(communities) - 10} more communities\n"
+        # Update group stats
+        cursor.execute('''
+            INSERT OR REPLACE INTO group_stats 
+            (group_id, group_title, member_count, active_members, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (group_id, chat.title, member_count, active_members, datetime.now()))
         
-        detailed_report += f"""
-📈 <b>System Health:</b>
-• Communities Protected: {len(communities)}
-• Active Monitoring: {len(communities)}
-• Recent Alerts: {total_alerts}
-• Uptime: 100%
-
-💡 <b>Recommendations:</b>
-• Continue current monitoring levels
-• Review alert settings regularly
-• Ensure all communities have admin access
-        """
+        # Update daily activity
+        today = datetime.now().date()
+        cursor.execute(
+            'SELECT message_count FROM group_activity WHERE group_id = ? AND date = ?',
+            (group_id, today)
+        )
+        result = cursor.fetchone()
         
-        return quick_report, detailed_report
-    
-    async def generate_group_report(self, chat_id):
-        """Generate report for specific group"""
-        communities = self.db.get_all_communities()
-        community = next((c for c in communities if c['chat_id'] == chat_id), None)
-        
-        if not community:
-            return "❌ Community not found in database."
-        
-        alerts_count = len([a for a in self.db.suspicious_activities if a['chat_id'] == chat_id])
-        
-        return f"""
-📊 <b>Group Report</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🏠 <b>Community:</b> {community['title']}
-🆔 <b>ID:</b> <code>{chat_id}</code>
-📝 <b>Type:</b> {community['type']}
-🚨 <b>Alerts:</b> {alerts_count}
-📅 <b>Added:</b> {community['added_at'].strftime('%Y-%m-%d')}
-
-🛡️ <b>Protection Status:</b>
-• Monitoring: ✅ Active
-• Alerts: {alerts_count} recorded
-• Database: ✅ Tracked
-
-💡 <b>Status:</b> Community is being monitored for suspicious activities.
-        """
-
-class ProtectionBot:
-    def __init__(self):
-        print("\n🔨 Creating ProtectionBot instance...")
-        self.config = Config()
-        self.db = SimpleDatabase()
-        self.monitor = ActivityMonitor()
-        self.alert_system = AlertSystem(self.config.BOT_TOKEN)
-        self.reporting = None  # Will be initialized when bot is available
-        print("✅ ProtectionBot instance created")
-    
-    async def notify_owner(self, context: CallbackContext, title: str, details: str, scan_data: dict = None):
-        """Notify owner with community scan results"""
-        try:
-            owner_id = self.config.OWNER_ID
-            if not owner_id:
-                print("❌ OWNER_ID not set, cannot send notifications")
-                return
-            
-            if scan_data:
-                notification = f"""
-🔔 <b>{title}</b>
-
-🏠 <b>Community:</b> {scan_data.get('title', 'Unknown')}
-🆔 <b>ID:</b> <code>{scan_data.get('id', 'Unknown')}</code>
-📝 <b>Type:</b> {scan_data.get('type', 'Unknown')}
-👥 <b>Members:</b> {scan_data.get('members_count', 'Unknown')}
-🛡️ <b>Status:</b> {scan_data.get('risk_level', 'Unknown')}
-
-📊 <b>Assessment:</b>
-{scan_data.get('assessment', 'Scan completed.')}
-
-💡 <b>Recommendations:</b>
-{scan_data.get('recommendation', 'Ensure bot has admin permissions.')}
-
-🕒 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-                """
-            else:
-                notification = f"🔔 <b>{title}</b>\n\n{details}\n\n🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            await context.bot.send_message(
-                chat_id=owner_id,
-                text=notification,
-                parse_mode=ParseMode.HTML
+        if result:
+            cursor.execute(
+                'UPDATE group_activity SET message_count = message_count + 1 WHERE group_id = ? AND date = ?',
+                (group_id, today)
             )
-            print(f"✅ Owner notified: {title}")
-            
-        except Exception as e:
-            print(f"❌ Failed to notify owner: {e}")
-    
-    async def is_bot_admin(self, context: CallbackContext, chat_id: int) -> bool:
-        """Check if bot is admin in the group/channel"""
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-            return bot_member.status in ['administrator', 'creator']
-        except Exception as e:
-            print(f"❌ Admin check error: {e}")
-            return False
-    
-    async def perform_live_scan(self, context: CallbackContext, chat_id: int, chat_title: str = None) -> dict:
-        """Perform live scan of community"""
-        try:
-            chat = await context.bot.get_chat(chat_id)
-            members_count = await context.bot.get_chat_members_count(chat_id)
-            is_admin = await self.is_bot_admin(context, chat_id)
-            
-            # Determine risk level based on various factors
-            if not is_admin:
-                risk_level = "🔴 HIGH RISK"
-                assessment = "Bot lacks admin permissions - Limited protection"
-                recommendation = "Make bot admin for full protection features"
-            else:
-                risk_level = "🟢 LOW RISK"
-                assessment = "Community is well-protected with active monitoring"
-                recommendation = "Continue current protection levels"
-            
-            return {
-                'id': chat_id,
-                'title': chat_title or chat.title,
-                'type': chat.type,
-                'username': f"@{chat.username}" if chat.username else "None",
-                'members_count': members_count,
-                'description': chat.description or "None",
-                'is_admin': is_admin,
-                'risk_level': risk_level,
-                'assessment': assessment,
-                'recommendation': recommendation,
-                'scan_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-        except Exception as e:
-            print(f"❌ Live scan failed: {e}")
-            return {
-                'id': chat_id,
-                'title': chat_title or 'Unknown',
-                'error': str(e),
-                'risk_level': 'UNKNOWN',
-                'assessment': 'Scan failed',
-                'recommendation': 'Please try again'
-            }
-
-    # ===== COMMAND HANDLERS =====
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
-        user = update.effective_user
-        chat = update.effective_chat
-        
-        print(f"🎯 /start from user {user.id} in {chat.type}")
-        
-        if chat.type == 'private':
-            # Private chat - show introduction
-            welcome_text = """
-🤖 <b>Community Protection Bot</b>
-
-I help protect your Telegram communities from spam, scams, and suspicious activities.
-
-<b>Features:</b>
-• Live community scanning
-• Suspicious activity detection
-• Security alerts
-• Activity monitoring
-
-<b>Commands:</b>
-/start - Start bot or scan community
-/help - Show help information
-/stats - View statistics
-/settings - Configure settings
-/alerts - Check alerts
-/status - Check community health
-
-<b>Setup:</b>
-Add me to your group/channel and make me admin for full protection!
-            """
-            await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
-            
         else:
-            # Group/channel - perform scan if admin
-            try:
-                if await self.is_bot_admin(context, chat.id):
-                    processing_msg = await update.message.reply_text("🔍 Scanning community...")
-                    scan_data = await self.perform_live_scan(context, chat.id, chat.title)
-                    
-                    quick_result = f"""
-✅ <b>Scan Complete - {scan_data['title']}</b>
-
-👥 <b>Members:</b> {scan_data['members_count']}
-🎯 <b>Type:</b> {scan_data['type']}
-🛡️ <b>Status:</b> {scan_data['risk_level']}
-
-📋 Report sent to owner.
-                    """
-                    await processing_msg.delete()
-                    await update.message.reply_text(quick_result, parse_mode=ParseMode.HTML)
-                    
-                    # Notify owner
-                    await self.notify_owner(
-                        context,
-                        "🏠 Community Scan",
-                        f"Scan by {user.first_name} in {chat.title}",
-                        scan_data
-                    )
-                    
-                    # Register community
-                    self.db.add_community(chat.id, chat.title, chat.type, user.id)
-                    
-                else:
-                    await update.message.reply_text(
-                        "⚠️ <b>Admin Access Required</b>\n\n"
-                        "I need admin permissions to scan this community.\n\n"
-                        "Please make me an administrator and try again.",
-                        parse_mode=ParseMode.HTML
-                    )
-                    
-            except Exception as e:
-                await update.message.reply_text("❌ Error scanning community.")
-                print(f"Start error: {e}")
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command"""
-        help_text = """
-🆘 <b>Help Guide</b>
-
-<b>Commands:</b>
-/start - Start bot or scan community
-/help - Show this help
-/stats - View statistics
-/settings - Configure settings
-/alerts - Check alerts
-/status - Check community health
-
-<b>Features:</b>
-• Community protection
-• Activity monitoring
-• Security alerts
-• Live scanning
-
-Need help? Contact the bot owner.
-        """
-        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
-    
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /stats command"""
-        communities = self.db.get_all_communities()
-        total_alerts = self.db.get_total_alerts()
-        
-        stats_text = f"""
-📊 <b>Statistics</b>
-
-🏠 <b>Communities:</b> {len(communities)}
-🚨 <b>Total Alerts:</b> {total_alerts}
-📈 <b>Status:</b> ✅ Active
-
-<b>Recent Communities:</b>
-"""
-        for community in communities[:5]:
-            stats_text += f"• {community['title']}\n"
-        
-        if len(communities) > 5:
-            stats_text += f"• ... and {len(communities) - 5} more\n"
-        
-        await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
-    
-    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /settings command"""
-        settings_text = """
-⚙️ <b>Settings</b>
-
-<b>Available Settings:</b>
-• Monitoring level
-• Alert preferences
-• Security rules
-
-<b>Status:</b>
-All protection features are active.
-
-<b>Note:</b>
-Advanced configuration available when bot is admin.
-        """
-        await update.message.reply_text(settings_text, parse_mode=ParseMode.HTML)
-    
-    async def alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /alerts command"""
-        alerts_data = self.db.get_alerts_summary()
-        total_alerts = self.db.get_total_alerts()
-        
-        alerts_text = f"""
-🚨 <b>Alerts Summary</b>
-
-📊 <b>Total Alerts:</b> {total_alerts}
-🏠 <b>Communities:</b> {len(alerts_data)}
-
-<b>Alert Distribution:</b>
-"""
-        for alert in alerts_data[:5]:
-            alerts_text += f"• {alert['chat_title']}: {alert['alert_count']} alerts\n"
-        
-        if len(alerts_data) > 5:
-            alerts_text += f"• ... and {len(alerts_data) - 5} more\n"
-        
-        await update.message.reply_text(alerts_text, parse_mode=ParseMode.HTML)
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command"""
-        chat = update.effective_chat
-        
-        if chat.type == 'private':
-            await update.message.reply_text("ℹ️ Use /status in a group/channel to check its health.")
-            return
-        
-        try:
-            if not await self.is_bot_admin(context, chat.id):
-                await update.message.reply_text("⚠️ I need admin access to check status.")
-                return
-            
-            processing_msg = await update.message.reply_text("🔍 Checking community health...")
-            scan_data = await self.perform_live_scan(context, chat.id, chat.title)
-            
-            status_report = f"""
-📊 <b>Community Health</b>
-
-🏠 <b>Community:</b> {scan_data['title']}
-🛡️ <b>Status:</b> {scan_data['risk_level']}
-👥 <b>Members:</b> {scan_data['members_count']}
-
-{scan_data['assessment']}
-
-💡 <b>Recommendation:</b>
-{scan_data['recommendation']}
-            """
-            
-            await processing_msg.delete()
-            await update.message.reply_text(status_report, parse_mode=ParseMode.HTML)
-            
-        except Exception as e:
-            await update.message.reply_text("❌ Error checking status.")
-            print(f"Status error: {e}")
-    
-    async def handle_new_chat_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle bot being added to groups/channels"""
-        new_members = update.message.new_chat_members
-        bot_id = context.bot.id
-        
-        for member in new_members:
-            if member.id == bot_id:
-                chat = update.effective_chat
-                added_by = update.effective_user
-                
-                print(f"🎉 Bot added to {chat.title} by {added_by.first_name}")
-                
-                try:
-                    # Perform scan
-                    scan_data = await self.perform_live_scan(context, chat.id, chat.title)
-                    
-                    # Register community
-                    self.db.add_community(chat.id, chat.title, chat.type, added_by.id)
-                    
-                    # Send welcome message
-                    welcome_msg = f"""
-🤖 <b>Protection Bot Activated</b>
-
-Thank you for adding me to <b>{chat.title}</b>!
-
-<b>Next Steps:</b>
-1. Make me admin for full protection
-2. Use /start to perform security scan
-3. Configure settings with /settings
-
-<b>Features:</b>
-• Security monitoring
-• Threat detection
-• Activity alerts
-
-I'll now begin monitoring this community.
-                    """
-                    await context.bot.send_message(chat.id, welcome_msg, parse_mode=ParseMode.HTML)
-                    
-                    # Notify owner
-                    await self.notify_owner(
-                        context,
-                        "🆕 Bot Added",
-                        f"Added to {chat.title} by {added_by.first_name}",
-                        scan_data
-                    )
-                    
-                    # Request admin if needed
-                    if not scan_data['is_admin'] and chat.type in ['group', 'supergroup']:
-                        await self.alert_system.request_admin_permissions(chat.id, bot_id)
-                        
-                except Exception as e:
-                    print(f"❌ Auto-setup failed: {e}")
-    
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Monitor messages for suspicious activity"""
-        message = update.effective_message
-        user = update.effective_user
-        
-        if not message or not user or user.is_bot:
-            return
-        
-        # Check for suspicious content
-        suspicious_reasons = self.monitor.check_message(message)
-        
-        if suspicious_reasons:
-            user_info = {
-                'user_id': user.id,
-                'username': user.username,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            # Log activity
-            self.db.log_suspicious_activity(
-                message.chat_id,
-                user.id,
-                user.username,
-                "suspicious_message",
-                " | ".join(suspicious_reasons),
-                message.text or message.caption or "Media content"
+            cursor.execute(
+                'INSERT INTO group_activity (group_id, message_count, active_users, date) VALUES (?, 1, ?, ?)',
+                (group_id, active_members, today)
             )
-            
-            # Send alert
-            await self.alert_system.send_alert(
-                message.chat_id,
-                user_info,
-                suspicious_reasons,
-                message.text or message.caption
-            )
-            
-            # Notify owner
-            await self.notify_owner(
-                context,
-                "🚨 Suspicious Activity",
-                f"User: {user.first_name}\n"
-                f"Chat: {message.chat.title}\n"
-                f"Reasons: {', '.join(suspicious_reasons)}"
-            )
-    
-    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors"""
-        logger.error(f"Error: {context.error}")
         
-        try:
-            if self.config.OWNER_ID:
-                await context.bot.send_message(
-                    self.config.OWNER_ID,
-                    f"🚨 Bot Error:\n{context.error}",
-                    parse_mode=ParseMode.HTML
-                )
-        except:
-            pass
-    
-    async def setup_commands(self, application):
-        """Setup bot commands menu"""
-        commands = [
-            BotCommand("start", "Start bot or scan community"),
-            BotCommand("help", "Show help guide"),
-            BotCommand("stats", "View statistics"),
-            BotCommand("settings", "Configure settings"),
-            BotCommand("alerts", "Check alerts"),
-            BotCommand("status", "Check community health"),
-        ]
-        await application.bot.set_my_commands(commands)
-        print("✅ Bot commands menu setup complete")
-    
-    def run(self):
-        """Start the bot"""
-        print("\n🚀 Starting bot...")
+        conn.commit()
+        conn.close()
         
-        if not self.config.BOT_TOKEN:
-            print("❌ BOT_TOKEN not set!")
+        logger.info(f"Updated stats for group {chat.title}: {member_count} members, {active_members} active")
+        
+    except Exception as e:
+        logger.error(f"Error updating group stats for {group_id}: {e}")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Community health check"""
+    chat_id = update.effective_chat.id
+    
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ This command works in groups only!")
+        return
+    
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        
+        # Get current group stats
+        cursor.execute(
+            'SELECT member_count, active_members, last_updated FROM group_stats WHERE group_id = ?',
+            (chat_id,)
+        )
+        result = cursor.fetchone()
+        
+        if not result:
+            await update.message.reply_text("📊 No data available yet. I need some time to collect statistics.")
             return
         
-        if not self.config.OWNER_ID:
-            print("❌ OWNER_ID not set!")
+        member_count, active_members, last_updated = result
+        
+        # Calculate activity rate
+        activity_rate = (active_members / member_count * 100) if member_count > 0 else 0
+        
+        # Get today's message count
+        today = datetime.now().date()
+        cursor.execute(
+            'SELECT SUM(message_count) FROM group_activity WHERE group_id = ? AND date = ?',
+            (chat_id, today)
+        )
+        today_messages = cursor.fetchone()[0] or 0
+        
+        # Health assessment
+        if activity_rate >= 50:
+            health_status = "💚 Excellent"
+        elif activity_rate >= 30:
+            health_status = "💛 Good"
+        elif activity_rate >= 15:
+            health_status = "🟡 Moderate"
+        else:
+            health_status = "🔴 Needs Attention"
+        
+        response = (
+            f"🏥 **Community Health Check**\n\n"
+            f"**Group Status:** {health_status}\n"
+            f"**Total Members:** {member_count}\n"
+            f"**Active Members (24h):** {active_members}\n"
+            f"**Activity Rate:** {activity_rate:.1f}%\n"
+            f"**Today's Messages:** {today_messages}\n"
+            f"**Last Updated:** {last_updated}\n\n"
+            f"*Active members are users who sent messages in the last 24 hours*"
+        )
+        
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Error in status command: {e}")
+        await update.message.reply_text("❌ Error retrieving status information")
+    finally:
+        conn.close()
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Community statistics"""
+    chat_id = update.effective_chat.id
+    
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ This command works in groups only!")
+        return
+    
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        
+        # Get current group stats
+        cursor.execute(
+            'SELECT member_count, active_members, last_updated FROM group_stats WHERE group_id = ?',
+            (chat_id,)
+        )
+        result = cursor.fetchone()
+        
+        if not result:
+            await update.message.reply_text("📊 No statistics available yet. I need some time to collect data.")
             return
         
-        try:
-            # Initialize database
-            self.db.initialize_database()
-            
-            # Create application
-            application = Application.builder().token(self.config.BOT_TOKEN).build()
-            
-            # Initialize reporting system
-            self.reporting = ReportingSystem(self.db, application.bot)
-            
-            # Add handlers
-            application.add_handler(CommandHandler("start", self.start_command))
-            application.add_handler(CommandHandler("help", self.help_command))
-            application.add_handler(CommandHandler("stats", self.stats_command))
-            application.add_handler(CommandHandler("settings", self.settings_command))
-            application.add_handler(CommandHandler("alerts", self.alerts_command))
-            application.add_handler(CommandHandler("status", self.status_command))
-            application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_chat_members))
-            application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
-            application.add_error_handler(self.error_handler)
-            
-            # Setup commands
-            application.post_init = self.setup_commands
-            
-            print("✅ All systems ready!")
-            print("🤖 Bot is running...")
-            
-            # Start polling
-            application.run_polling()
-            
-        except Exception as e:
-            print(f"❌ Failed to start bot: {e}")
-            import traceback
-            traceback.print_exc()
+        member_count, active_members, last_updated = result
+        
+        # Get weekly activity trend
+        week_ago = (datetime.now() - timedelta(days=7)).date()
+        cursor.execute('''
+            SELECT date, message_count, active_users 
+            FROM group_activity 
+            WHERE group_id = ? AND date >= ? 
+            ORDER BY date DESC 
+            LIMIT 7
+        ''', (chat_id, week_ago))
+        
+        weekly_data = cursor.fetchall()
+        
+        # Calculate weekly totals
+        weekly_messages = sum(row[1] for row in weekly_data)
+        avg_daily_active = sum(row[2] for row in weekly_data) / len(weekly_data) if weekly_data else 0
+        
+        response = (
+            f"📈 **Community Statistics**\n\n"
+            f"**Total Members:** {member_count}\n"
+            f"**Currently Active:** {active_members}\n"
+            f"**Weekly Messages:** {weekly_messages}\n"
+            f"**Avg Daily Active Users:** {avg_daily_active:.1f}\n\n"
+            f"**Recent Activity:**\n"
+        )
+        
+        for date, messages, active_users in weekly_data[-3:]:  # Last 3 days
+            response += f"• {date}: {messages} msgs, {active_users} active users\n"
+        
+        response += f"\n*Last updated: {last_updated}*"
+        
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Error in stats command: {e}")
+        await update.message.reply_text("❌ Error retrieving statistics")
+    finally:
+        conn.close()
+
+async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Track user activity when messages are sent"""
+    if not update.message or not update.effective_user:
+        return
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    if update.effective_chat.type not in ["group", "supergroup"]:
+        return
+    
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        
+        # Update user activity
+        cursor.execute('''
+            INSERT OR REPLACE INTO user_activity 
+            (user_id, group_id, last_active, message_count)
+            VALUES (?, ?, ?, COALESCE((SELECT message_count FROM user_activity WHERE user_id = ? AND group_id = ?), 0) + 1)
+        ''', (user_id, chat_id, datetime.now(), user_id, chat_id))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error tracking message: {e}")
+
+async def post_init(application: Application):
+    """Post initialization - set bot commands"""
+    commands = [
+        BotCommand("start", "Live scanning in groups, introduction in private"),
+        BotCommand("status", "Community health checks"),
+        BotCommand("stats", "Community statistics"),
+    ]
+    await application.bot.set_my_commands(commands)
+
+def main():
+    """Start the bot."""
+    if not BOT_TOKEN:
+        raise ValueError("No BOT_TOKEN environment variable set")
+    
+    # Create the Application
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("stats", stats))
+    
+    # Add message handler for tracking activity (handle all text messages except commands)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        track_message
+    ))
+
+    # Start the Bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    # Create and run the bot
-    bot = ProtectionBot()
-    bot.run()
+    main()
