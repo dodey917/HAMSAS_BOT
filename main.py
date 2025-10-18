@@ -37,7 +37,68 @@ class ProtectionBot:
         self.monitor = ActivityMonitor()
         self.alert_system = AlertSystem(self.config.BOT_TOKEN)
         self.reporting = None  # Will be initialized later when bot is available
+        self.owner_password = "admin123"  # Set your owner password here
+        self.verified_owners = set()  # Track verified owner sessions
         print("✅ ProtectionBot instance created")
+    
+    async def notify_owner(self, context, command_used, user_info, chat_info, response=None):
+        """Notify owner about command usage in groups/channels"""
+        try:
+            owner_id = self.config.OWNER_ID
+            if not owner_id:
+                return
+            
+            notification = f"""
+🔔 <b>Command Activity Report</b>
+
+👤 <b>User:</b> {user_info.get('name', 'Unknown')} (ID: {user_info.get('id', 'Unknown')})
+💬 <b>Command:</b> {command_used}
+🏠 <b>Community:</b> {chat_info.get('title', 'Unknown')} (ID: {chat_info.get('id', 'Unknown')})
+🕒 <b>Time:</b> {context.bot_data.get('current_time', 'Just now')}
+
+📋 <b>Response Sent:</b>
+{response if response else 'No specific response'}
+            """
+            
+            await context.bot.send_message(
+                chat_id=owner_id,
+                text=notification,
+                parse_mode=ParseMode.HTML
+            )
+            print(f"✅ Owner notified about {command_used} command usage")
+            
+        except Exception as e:
+            print(f"❌ Failed to notify owner: {e}")
+    
+    async def verify_owner(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Verify if user is the owner using password"""
+        user_id = update.effective_user.id
+        
+        # Check if already verified in this session
+        if user_id in self.verified_owners:
+            return True
+        
+        # Check if user is the owner by ID
+        if str(user_id) == self.config.OWNER_ID:
+            self.verified_owners.add(user_id)
+            return True
+        
+        # If not owner by ID, ask for password
+        if context.args and context.args[0] == self.owner_password:
+            self.verified_owners.add(user_id)
+            await update.message.reply_text("✅ Owner verification successful!")
+            return True
+        
+        # Request password
+        await update.message.reply_text(
+            "🔒 <b>Owner Verification Required</b>\n\n"
+            "This command is restricted to bot owner only.\n"
+            "Please provide the owner password:\n"
+            "<code>/command password</code>\n\n"
+            "Example: <code>/report admin123</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return False
     
     # ===== EXISTING COMMANDS (PRESERVED) =====
     
@@ -80,6 +141,16 @@ Developed with ❤️ for Telegram community safety.
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send help information"""
+        # Notify owner about command usage
+        user_info = {
+            'id': update.effective_user.id,
+            'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+        }
+        chat_info = {
+            'id': update.effective_chat.id,
+            'title': update.effective_chat.title or 'Private Chat'
+        }
+        
         help_text = """
 🆘 <b>HAMSAS Bot Help Guide</b>
 
@@ -112,35 +183,141 @@ Make me an admin with:
 Need help? Contact my developer!
         """
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+        
+        # Notify owner
+        await self.notify_owner(context, "/help", user_info, chat_info, "Help information sent")
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Send group statistics"""
+        """Send LIVE group statistics and security overview"""
         chat_id = update.effective_chat.id
         
         try:
-            # Get basic chat information
+            # Notify owner about command usage
+            user_info = {
+                'id': update.effective_user.id,
+                'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+            }
+            chat_info = {
+                'id': chat_id,
+                'title': update.effective_chat.title or 'Unknown Chat'
+            }
+            
+            # Show processing message
+            processing_msg = await update.message.reply_text("🔍 Scanning community...")
+            
+            # Get LIVE chat information
             chat = await context.bot.get_chat(chat_id)
+            members_count = await context.bot.get_chat_members_count(chat_id)
+            
+            # Get chat administrators (if bot has permission)
+            try:
+                admins = await context.bot.get_chat_administrators(chat_id)
+                admin_count = len([admin for admin in admins if not admin.user.is_bot])
+            except:
+                admin_count = "Unknown"
+            
+            # Determine community status based on type and activity
+            if chat.type == 'channel':
+                status = "📢 Channel"
+                protection_status = "🔒 Protected" if chat.permissions else "⚠️ Needs Admin"
+            elif chat.type in ['group', 'supergroup']:
+                status = "👥 Group"
+                protection_status = "🔒 Protected" if chat.permissions else "⚠️ Needs Admin"
+            else:
+                status = "💬 Private Chat"
+                protection_status = "🔒 Secure"
+            
+            # Generate live security assessment
+            security_assessment = await self.generate_security_assessment(context.bot, chat_id)
             
             stats_text = f"""
-📊 <b>Group Statistics - {chat.title}</b>
+📊 <b>LIVE COMMUNITY SCAN - {chat.title}</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-👥 <b>Members:</b> Loading...
-🚨 <b>Activities Today:</b> 0
-⚠️ <b>Alerts Today:</b> 0
-🔍 <b>Suspicious Activities:</b> 0
+🏠 <b>Community Overview:</b>
+• <b>Type:</b> {status}
+• <b>Members:</b> {members_count}
+• <b>Admins:</b> {admin_count}
+• <b>ID:</b> <code>{chat_id}</code>
 
-📈 <b>Security Status:</b> 🔒 Protected
-🕒 <b>Last Scan:</b> Just now
+🛡️ <b>Security Status:</b>
+• <b>Protection:</b> {protection_status}
+• <b>Bot Permissions:</b> {'✅ Full Access' if chat.permissions else '❌ Limited'}
+• <b>Monitoring:</b> ✅ Active
+• <b>Last Scan:</b> Just now
 
-<i>More detailed analytics coming soon!</i>
+📈 <b>Live Assessment:</b>
+{security_assessment}
+
+💡 <b>Recommendations:</b>
+• Ensure bot has admin permissions
+• Monitor member growth regularly
+• Review security settings weekly
             """
+            
+            await processing_msg.delete()
             await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
             
+            # Notify owner
+            await self.notify_owner(context, "/stats", user_info, chat_info, f"Live scan completed for {chat.title}")
+            
         except Exception as e:
-            await update.message.reply_text("❌ Could not fetch statistics. Make sure I'm an admin in this group.")
+            error_msg = "❌ Could not complete live scan. Make sure I'm an admin in this community."
+            await update.message.reply_text(error_msg)
+            print(f"Stats command error: {e}")
+    
+    async def generate_security_assessment(self, bot, chat_id):
+        """Generate live security assessment for the community"""
+        try:
+            chat = await bot.get_chat(chat_id)
+            
+            assessment = []
+            
+            # Check bot permissions
+            if hasattr(chat, 'permissions') and chat.permissions:
+                assessment.append("✅ Bot has necessary permissions")
+            else:
+                assessment.append("⚠️ Bot needs admin permissions")
+            
+            # Check community type
+            if chat.type in ['group', 'supergroup']:
+                assessment.append("✅ Group monitoring active")
+            elif chat.type == 'channel':
+                assessment.append("✅ Channel protection active")
+            
+            # Check member count for risk assessment
+            try:
+                members_count = await bot.get_chat_members_count(chat_id)
+                if members_count > 1000:
+                    assessment.append("📈 Large community - Enhanced monitoring")
+                elif members_count > 100:
+                    assessment.append("📊 Medium community - Standard monitoring")
+                else:
+                    assessment.append("👥 Small community - Basic monitoring")
+            except:
+                assessment.append("📊 Community size: Unknown")
+            
+            # Add general security status
+            assessment.append("🔍 Real-time scanning: Active")
+            assessment.append("🚨 Alert system: Operational")
+            
+            return "• " + "\n• ".join(assessment)
+            
+        except Exception as e:
+            return f"• 🔍 Security assessment: Limited\n• ℹ️ Additional info unavailable"
     
     async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Configure bot settings"""
+        # Notify owner about command usage
+        user_info = {
+            'id': update.effective_user.id,
+            'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+        }
+        chat_info = {
+            'id': update.effective_chat.id,
+            'title': update.effective_chat.title or 'Private Chat'
+        }
+        
         settings_text = """
 ⚙️ <b>Bot Settings</b>
 
@@ -162,9 +339,22 @@ Use /alerts to manage alert preferences
 <i>Settings interface coming in next update!</i>
         """
         await update.message.reply_text(settings_text, parse_mode=ParseMode.HTML)
+        
+        # Notify owner
+        await self.notify_owner(context, "/settings", user_info, chat_info, "Settings information sent")
     
     async def alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manage alert preferences"""
+        # Notify owner about command usage
+        user_info = {
+            'id': update.effective_user.id,
+            'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+        }
+        chat_info = {
+            'id': update.effective_chat.id,
+            'title': update.effective_chat.title or 'Private Chat'
+        }
+        
         alerts_text = """
 🚨 <b>Alert Management</b>
 
@@ -190,14 +380,26 @@ Use /alerts to manage alert preferences
 <i>Alert management interface coming soon!</i>
         """
         await update.message.reply_text(alerts_text, parse_mode=ParseMode.HTML)
+        
+        # Notify owner
+        await self.notify_owner(context, "/alerts", user_info, chat_info, "Alerts information sent")
     
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate comprehensive report of all groups/channels"""
         try:
-            user_id = update.effective_user.id
-            if str(user_id) != self.config.OWNER_ID:
-                await update.message.reply_text("❌ This command is only available for the bot owner.")
+            # Verify owner first
+            if not await self.verify_owner(update, context):
                 return
+
+            # Notify owner about command usage
+            user_info = {
+                'id': update.effective_user.id,
+                'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+            }
+            chat_info = {
+                'id': update.effective_chat.id,
+                'title': update.effective_chat.title or 'Private Chat'
+            }
 
             # Show processing message
             processing_msg = await update.message.reply_text("📊 Generating comprehensive report...")
@@ -216,12 +418,25 @@ Use /alerts to manage alert preferences
             if detailed_report:
                 await update.message.reply_text(detailed_report, parse_mode=ParseMode.HTML)
             
+            # Notify owner (self-notification for owner commands)
+            await self.notify_owner(context, "/report", user_info, chat_info, "Comprehensive report generated")
+            
         except Exception as e:
             await update.message.reply_text(f"❌ Error generating report: {str(e)}")
     
     async def group_report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate report for current group"""
         try:
+            # Notify owner about command usage
+            user_info = {
+                'id': update.effective_user.id,
+                'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+            }
+            chat_info = {
+                'id': update.effective_chat.id,
+                'title': update.effective_chat.title or 'Private Chat'
+            }
+            
             chat_id = update.effective_chat.id
             
             # Initialize reporting system if not already done
@@ -230,6 +445,10 @@ Use /alerts to manage alert preferences
                 
             report = await self.reporting.generate_group_report(chat_id)
             await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+            
+            # Notify owner
+            await self.notify_owner(context, "/groupreport", user_info, chat_info, f"Group report generated for {chat_info['title']}")
+            
         except Exception as e:
             await update.message.reply_text(f"❌ Error generating group report: {str(e)}")
     
@@ -252,6 +471,17 @@ Use /alerts to manage alert preferences
                 print("   Added by: {}".format(update.effective_user.id))
                 
                 db.add_community(chat.id, chat.title, chat.type, update.effective_user.id)
+                
+                # Notify owner about bot addition
+                user_info = {
+                    'id': update.effective_user.id,
+                    'name': f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+                }
+                chat_info = {
+                    'id': chat.id,
+                    'title': chat.title or 'Unknown Chat'
+                }
+                await self.notify_owner(context, "Bot Added to Community", user_info, chat_info, f"Bot was added to {chat.title} by {user_info['name']}")
                 
                 # Request admin permissions
                 if chat.type in ['group', 'supergroup']:
@@ -299,6 +529,23 @@ Use /alerts to manage alert preferences
                 user_info=user_info,
                 reasons=suspicious_reasons,
                 message_content=message.text or message.caption
+            )
+            
+            # Notify owner about suspicious activity
+            chat_info = {
+                'id': message.chat_id,
+                'title': message.chat.title or 'Unknown Chat'
+            }
+            user_alert_info = {
+                'id': user.id,
+                'name': f"{user.first_name} {user.last_name or ''}".strip()
+            }
+            await self.notify_owner(
+                context, 
+                "Suspicious Activity Detected", 
+                user_alert_info, 
+                chat_info, 
+                f"Activity: {', '.join(suspicious_reasons)}"
             )
     
     async def setup_commands(self, application):
